@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import platform
 import shutil
 import subprocess
@@ -45,6 +46,39 @@ class HermesAskResult:
     project_dir: Path
     returncode: int
     stderr: str
+
+
+def _hermes_home() -> Path:
+    raw = os.environ.get("HERMES_HOME")
+    return Path(raw).expanduser() if raw else Path.home() / ".hermes"
+
+
+def _latest_active_session_id() -> str | None:
+    """Return the most recently active, still-open Hermes session id.
+
+    Reads Hermes's own state.db (``HERMES_HOME/runtime-data/state.db``).
+    A session is "active" when ``ended_at`` is NULL (never finalized).
+    This lets /hermes/ask answer with the live conversation context via
+    ``hermes -z ... --resume <id>`` instead of a context-free one-shot.
+    """
+    import sqlite3
+
+    db = _hermes_home() / "runtime-data" / "state.db"
+    if not db.is_file():
+        return None
+    try:
+        con = sqlite3.connect(str(db), timeout=5)
+        try:
+            row = con.execute(
+                "SELECT id FROM sessions "
+                "WHERE ended_at IS NULL AND archived = 0 "
+                "ORDER BY started_at DESC LIMIT 1"
+            ).fetchone()
+            return row[0] if row else None
+        finally:
+            con.close()
+    except (sqlite3.Error, OSError):
+        return None
 
 
 class HermesManager:
@@ -126,6 +160,7 @@ class HermesManager:
         question: str,
         context: str | None = None,
         timeout_seconds: float = 120,
+        session_id: str | None = None,
     ) -> HermesAskResult:
         status = self.status()
         if not status.installed:
@@ -138,8 +173,14 @@ class HermesManager:
         # (opencode-go / Zen free tier) can hit IP rate limits and leave
         # oneshot stuck in retry backoff for minutes (no response ever
         # surfaces; oneshot silences its own logs).
+        cmd = ["hermes", "--oneshot", prompt, "--model", "deepseek-v4-flash", "--provider", "deepseek"]
+        # Resume the caller's (or the most recent live) session so the
+        # one-shot answers with real conversation context, not in a vacuum.
+        resume_id = session_id or _latest_active_session_id()
+        if resume_id:
+            cmd.extend(["--resume", resume_id])
         completed = subprocess.run(
-            ["hermes", "--oneshot", prompt, "--model", "deepseek-v4-flash", "--provider", "deepseek"],
+            cmd,
             cwd=project_dir,
             text=True,
             capture_output=True,
