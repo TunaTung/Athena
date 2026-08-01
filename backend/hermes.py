@@ -134,8 +134,12 @@ class HermesManager:
             raise RuntimeError("Hermes Agent setup has not completed.")
 
         prompt = _ask_prompt(question, context)
+        # Pin the DeepSeek official provider: the config default
+        # (opencode-go / Zen free tier) can hit IP rate limits and leave
+        # oneshot stuck in retry backoff for minutes (no response ever
+        # surfaces; oneshot silences its own logs).
         completed = subprocess.run(
-            ["hermes", "--oneshot", prompt],
+            ["hermes", "--oneshot", prompt, "--model", "deepseek-v4-flash", "--provider", "deepseek"],
             cwd=project_dir,
             text=True,
             capture_output=True,
